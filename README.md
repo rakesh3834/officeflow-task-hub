@@ -76,7 +76,8 @@ This project uses the Vinext/Sites starter, so it is best deployed from a GitHub
 ## GitHub Pages
 
 The repository includes a GitHub Actions workflow at `.github/workflows/pages.yml`.
-On every push to `main`, GitHub builds the static app and deploys it to GitHub Pages.
+When GitHub Pages is enabled for the repository, every push to `main` builds the static app and deploys it to GitHub Pages.
+GitHub Pages may require the repository to be public, depending on the GitHub plan.
 
 For local verification of the GitHub Pages build:
 
