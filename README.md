@@ -16,7 +16,7 @@ The app gives you:
 ## Daily Workflow
 
 1. Open OfficeFlow and click `Load Sheet` if you want the latest Google Sheet records.
-2. Add a task with `New task`, set the owner, priority, type, due date, sprint, labels, notes, and progress.
+2. Add a task with `New task`, set the owner, priority, type, due date, sprint, labels, notes, and progress. Labels are comma-separated tags, such as `finance`, `approval`, or `client-a`, used to group and search related tasks.
 3. Work from the `Board`, `List`, or `Focus` view.
 4. Move tasks between `Backlog`, `Today`, `In Progress`, `Blocked`, and `Done`.
 5. Use the clickable summary cards and date filters to review open, due today, overdue, blocked, completed, assigned, or recently changed tasks.

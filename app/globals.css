@@ -875,6 +875,17 @@ td:last-child {
   margin-bottom: 12px;
 }
 
+.label-field {
+  display: grid;
+  gap: 6px;
+}
+
+.field-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .field.wide {
   width: 100%;
 }

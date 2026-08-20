@@ -1171,9 +1171,14 @@ function TaskDialog({
           </label>
         </div>
 
-        <label className="field wide">
-          Labels
-          <input value={draft.labels.join(", ")} onChange={(event) => setField("labels", event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} />
+        <label className="field wide label-field">
+          Labels (tags)
+          <input
+            value={draft.labels.join(", ")}
+            placeholder="finance, approval, client-a"
+            onChange={(event) => setField("labels", event.target.value.split(",").map((item) => item.trim()).filter(Boolean))}
+          />
+          <span className="field-help">Use labels to group related tasks. Add comma-separated tags for departments, projects, clients, or work types.</span>
         </label>
         <div className="task-timeline" aria-label="Task workflow timestamps">
           <div>
