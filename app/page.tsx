@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
   AlertTriangle,
@@ -151,6 +151,16 @@ const nowIso = () => new Date().toISOString();
 
 function isAppsScriptUrl(value: string) {
   return APPS_SCRIPT_URL_PATTERN.test(value.trim());
+}
+
+function canSyncToSheet(settings: Settings) {
+  return isAppsScriptUrl(settings.scriptUrl) && Boolean(settings.token.trim());
+}
+
+function localSyncMessage(settings: Settings) {
+  if (!isAppsScriptUrl(settings.scriptUrl)) return "Local only - add Apps Script URL";
+  if (!settings.token.trim()) return "Local only - add app token";
+  return "Local only - Sheet sync not connected";
 }
 
 function shiftDate(days: number) {
@@ -462,6 +472,20 @@ function nextKey(tasks: Task[]) {
   return `OFF-${max + 1}`;
 }
 
+function upsertTask(tasks: Task[], task: Task) {
+  const exists = tasks.some((item) => item.id === task.id);
+  return exists ? tasks.map((item) => (item.id === task.id ? task : item)) : [task, ...tasks];
+}
+
+function activitySignature(item: Activity) {
+  return [item.timestamp, item.taskId, item.action, item.field, item.oldValue, item.newValue].join("|");
+}
+
+function removeActivityEntries(activity: Activity[], entries: Activity[]) {
+  const signatures = new Set(entries.map(activitySignature));
+  return activity.filter((item) => !signatures.has(activitySignature(item)));
+}
+
 async function sheetRequest<T>(
   settings: Settings,
   action: string,
@@ -474,10 +498,14 @@ async function sheetRequest<T>(
   if (!isAppsScriptUrl(scriptUrl)) {
     throw new Error("Paste the Apps Script Web App URL ending in /exec. The Sheet URL, GitHub Pages URL, and localhost URL cannot sync data.");
   }
+  const token = settings.token.trim();
+  if (!token) {
+    throw new Error("App token is missing. Add the same token in OfficeFlow Settings and Apps Script APP_TOKEN.");
+  }
   const response = await fetch(scriptUrl, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action, token: settings.token, actor: settings.actor, ...payload }),
+    body: JSON.stringify({ action, token, actor: settings.actor || "User", ...payload }),
   });
   const text = await response.text();
   if (!response.ok) {
@@ -516,6 +544,7 @@ export default function Home() {
   const [syncState, setSyncState] = useState<"local" | "syncing" | "synced" | "error">("local");
   const [syncMessage, setSyncMessage] = useState("Local only - Sheet sync not connected");
   const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [pendingTaskIds, setPendingTaskIds] = useState<string[]>([]);
 
   useEffect(() => {
     let mounted = true;
@@ -585,7 +614,52 @@ export default function Home() {
     };
   }, [tasks]);
 
-  const syncEnabled = isAppsScriptUrl(settings.scriptUrl);
+  const syncEnabled = canSyncToSheet(settings);
+  const pendingTaskIdSet = useMemo(() => new Set(pendingTaskIds), [pendingTaskIds]);
+  const hasPendingWrites = pendingTaskIds.length > 0;
+  const currentLocalSyncMessage = useMemo(() => localSyncMessage(settings), [settings]);
+  const visibleSyncState = syncEnabled ? syncState : "local";
+  const visibleSyncMessage = syncEnabled ? syncMessage : currentLocalSyncMessage;
+
+  const markTaskPending = useCallback((taskId: string, pending: boolean) => {
+    setPendingTaskIds((current) => {
+      if (pending) return current.includes(taskId) ? current : [...current, taskId];
+      return current.filter((id) => id !== taskId);
+    });
+  }, []);
+
+  const loadFromSheet = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      if (!syncEnabled) {
+        setSyncState("local");
+        setSyncMessage(currentLocalSyncMessage);
+        return;
+      }
+      if (!options.silent) {
+        setSyncState("syncing");
+        setSyncMessage("Syncing from Sheet");
+      }
+      try {
+        const data = await sheetRequest<{ tasks?: Task[]; activity?: Activity[] }>(settings, "list");
+        setTasks((data.tasks || []).map(normalizeTask));
+        setActivity(data.activity || []);
+        setSyncState("synced");
+        setSyncMessage(`${options.silent ? "Auto-synced" : "Synced"} ${TIME_FORMATTER.format(new Date())}`);
+      } catch (error) {
+        setSyncState("error");
+        setSyncMessage(error instanceof Error ? error.message : "Sync failed");
+      }
+    },
+    [currentLocalSyncMessage, settings, syncEnabled],
+  );
+
+  useEffect(() => {
+    if (!storageReady || !syncEnabled || hasPendingWrites) return;
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadFromSheet({ silent: true });
+    }, 30000);
+    return () => window.clearInterval(intervalId);
+  }, [hasPendingWrites, loadFromSheet, storageReady, syncEnabled]);
 
   function chooseQuickFilter(filter: QuickFilter) {
     setQuickFilter((current) => (current === filter ? "all" : filter));
@@ -602,42 +676,38 @@ export default function Home() {
     setQuery("");
   }
 
-  async function loadFromSheet() {
-    setSyncState("syncing");
-    setSyncMessage("Syncing");
-    try {
-      const data = await sheetRequest<{ tasks: Task[]; activity: Activity[] }>(settings, "list");
-      setTasks((data.tasks || []).map(normalizeTask));
-      setActivity(data.activity || []);
-      setSyncState("synced");
-      setSyncMessage(`Synced ${TIME_FORMATTER.format(new Date())}`);
-    } catch (error) {
-      setSyncState("error");
-      setSyncMessage(error instanceof Error ? error.message : "Sync failed");
-    }
-  }
-
   async function persistTask(task: Task, action: "create" | "update" = "update") {
     const previousTask = tasks.find((item) => item.id === task.id);
     const savedTask = stampTaskWorkflow(task, action === "create" ? undefined : previousTask);
     const entries = buildActivityEntries(action === "create" ? undefined : previousTask, savedTask, action, settings.actor || "User");
-    setTasks((current) => {
-      const exists = current.some((item) => item.id === savedTask.id);
-      return exists ? current.map((item) => (item.id === savedTask.id ? savedTask : item)) : [savedTask, ...current];
-    });
+    setTasks((current) => upsertTask(current, savedTask));
     setActivity((current) => [...entries, ...current].slice(0, 80));
 
-    if (syncEnabled) {
-      setSyncState("syncing");
-      setSyncMessage("Saving");
-      try {
-        await sheetRequest(settings, "saveTask", { task: savedTask, activities: entries });
-        setSyncState("synced");
-        setSyncMessage("Saved to Sheet");
-      } catch (error) {
-        setSyncState("error");
-        setSyncMessage(error instanceof Error ? error.message : "Save failed");
-      }
+    if (!syncEnabled) {
+      setSyncState("local");
+      setSyncMessage(currentLocalSyncMessage);
+      return;
+    }
+
+    markTaskPending(savedTask.id, true);
+    setSyncState("syncing");
+    setSyncMessage("Saving to Sheet");
+    try {
+      const data = await sheetRequest<{ task?: Task }>(settings, "saveTask", { task: savedTask, activities: entries });
+      const confirmedTask = normalizeTask(data.task || savedTask);
+      setTasks((current) => upsertTask(current, confirmedTask));
+      setSyncState("synced");
+      setSyncMessage(`Saved to Sheet ${TIME_FORMATTER.format(new Date())}`);
+    } catch (error) {
+      setTasks((current) => {
+        if (previousTask) return current.map((item) => (item.id === savedTask.id ? previousTask : item));
+        return current.filter((item) => item.id !== savedTask.id);
+      });
+      setActivity((current) => removeActivityEntries(current, entries));
+      setSyncState("error");
+      setSyncMessage(error instanceof Error ? error.message : "Save failed");
+    } finally {
+      markTaskPending(savedTask.id, false);
     }
   }
 
@@ -660,17 +730,26 @@ export default function Home() {
       actor: settings.actor || "User",
     };
     setActivity((current) => [entry, ...current].slice(0, 80));
-    if (syncEnabled) {
-      setSyncState("syncing");
-      setSyncMessage("Deleting");
-      try {
-        await sheetRequest(settings, "deleteTask", { id: task.id, activities: [entry] });
-        setSyncState("synced");
-        setSyncMessage("Deleted from Sheet");
-      } catch (error) {
-        setSyncState("error");
-        setSyncMessage(error instanceof Error ? error.message : "Delete failed");
-      }
+    if (!syncEnabled) {
+      setSyncState("local");
+      setSyncMessage(currentLocalSyncMessage);
+      return;
+    }
+
+    markTaskPending(task.id, true);
+    setSyncState("syncing");
+    setSyncMessage("Deleting from Sheet");
+    try {
+      await sheetRequest(settings, "deleteTask", { id: task.id, activities: [entry] });
+      setSyncState("synced");
+      setSyncMessage(`Deleted from Sheet ${TIME_FORMATTER.format(new Date())}`);
+    } catch (error) {
+      setTasks((current) => (current.some((item) => item.id === task.id) ? current : [task, ...current]));
+      setActivity((current) => removeActivityEntries(current, [entry]));
+      setSyncState("error");
+      setSyncMessage(error instanceof Error ? error.message : "Delete failed");
+    } finally {
+      markTaskPending(task.id, false);
     }
   }
 
@@ -709,9 +788,9 @@ export default function Home() {
             Sheet
             <ExternalLink size={14} />
           </a>
-          <SyncPill state={syncState} message={syncMessage} local={!syncEnabled} />
-          <button className="icon-button" type="button" aria-label="Refresh from Sheet" title="Refresh from Sheet" onClick={loadFromSheet}>
-            {syncState === "syncing" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+          <SyncPill state={visibleSyncState} message={visibleSyncMessage} local={!syncEnabled} />
+          <button className="icon-button" type="button" aria-label="Refresh from Sheet" title="Refresh from Sheet" onClick={() => void loadFromSheet()}>
+            {visibleSyncState === "syncing" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
           </button>
           <button className="icon-button" type="button" aria-label="Settings" title="Settings" onClick={() => setShowSettings(true)}>
             <Settings2 size={18} />
@@ -822,6 +901,7 @@ export default function Home() {
                       onDelete={() => void deleteTask(task)}
                       onMove={(nextStatus) => void moveTask(task.id, nextStatus)}
                       onDragStart={() => setDraggedId(task.id)}
+                      pending={pendingTaskIdSet.has(task.id)}
                     />
                   ))}
                 </div>
@@ -832,11 +912,17 @@ export default function Home() {
       )}
 
       {view === "list" && (
-        <TaskTable tasks={filteredTasks} onEdit={setEditingTask} onDelete={(task) => void deleteTask(task)} onMove={(task, status) => void moveTask(task.id, status)} />
+        <TaskTable
+          tasks={filteredTasks}
+          onEdit={setEditingTask}
+          onDelete={(task) => void deleteTask(task)}
+          onMove={(task, status) => void moveTask(task.id, status)}
+          pendingTaskIds={pendingTaskIdSet}
+        />
       )}
 
       {view === "focus" && (
-        <FocusView tasks={filteredTasks} onEdit={setEditingTask} onMove={(task, status) => void moveTask(task.id, status)} />
+        <FocusView tasks={filteredTasks} onEdit={setEditingTask} onMove={(task, status) => void moveTask(task.id, status)} pendingTaskIds={pendingTaskIdSet} />
       )}
 
       <section className="activity-panel" aria-label="Recent activity">
@@ -872,10 +958,10 @@ export default function Home() {
           settings={settings}
           onChange={setSettings}
           onClose={() => setShowSettings(false)}
-          onLoad={loadFromSheet}
+          onLoad={() => void loadFromSheet()}
           onGenerateToken={generateToken}
-          syncState={syncState}
-          syncMessage={syncMessage}
+          syncState={visibleSyncState}
+          syncMessage={visibleSyncMessage}
         />
       )}
     </main>
@@ -916,25 +1002,33 @@ function TaskCard({
   onDelete,
   onMove,
   onDragStart,
+  pending,
 }: {
   task: Task;
   onEdit: () => void;
   onDelete: () => void;
   onMove: (status: Status) => void;
   onDragStart: () => void;
+  pending: boolean;
 }) {
   return (
-    <article className={`task-card priority-${task.priority.toLowerCase()}`} draggable onDragStart={onDragStart}>
+    <article className={`task-card priority-${task.priority.toLowerCase()} ${pending ? "sync-pending" : ""}`} draggable={!pending} onDragStart={onDragStart}>
       <div className="task-card-top">
         <span className="drag-handle" aria-hidden="true">
           <GripVertical size={15} />
         </span>
         <span className="task-key">{task.key}</span>
         <span className={`priority-chip ${task.priority.toLowerCase()}`}>{task.priority}</span>
-        <button className="tiny-button" type="button" aria-label={`Edit ${task.key}`} title="Edit" onClick={onEdit}>
+        {pending && (
+          <span className="sync-chip">
+            <Loader2 className="spin" size={13} />
+            Syncing
+          </span>
+        )}
+        <button className="tiny-button" type="button" aria-label={`Edit ${task.key}`} title="Edit" onClick={onEdit} disabled={pending}>
           <Pencil size={15} />
         </button>
-        <button className="tiny-button danger" type="button" aria-label={`Delete ${task.key}`} title="Delete" onClick={onDelete}>
+        <button className="tiny-button danger" type="button" aria-label={`Delete ${task.key}`} title="Delete" onClick={onDelete} disabled={pending}>
           <Trash2 size={15} />
         </button>
       </div>
@@ -961,7 +1055,7 @@ function TaskCard({
       <div className="progress-track" aria-label={`${task.progress}% complete`}>
         <span style={{ width: `${task.progress}%` }} />
       </div>
-      <select className="status-select" value={task.status} onChange={(event) => onMove(event.target.value as Status)}>
+      <select className="status-select" value={task.status} onChange={(event) => onMove(event.target.value as Status)} disabled={pending}>
         {STATUSES.map((status) => (
           <option key={status}>{status}</option>
         ))}
@@ -975,11 +1069,13 @@ function TaskTable({
   onEdit,
   onDelete,
   onMove,
+  pendingTaskIds,
 }: {
   tasks: Task[];
   onEdit: (task: Task) => void;
   onDelete: (task: Task) => void;
   onMove: (task: Task, status: Status) => void;
+  pendingTaskIds: Set<string>;
 }) {
   return (
     <section className="table-panel" aria-label="Task list">
@@ -999,38 +1095,42 @@ function TaskTable({
           </tr>
         </thead>
         <tbody>
-          {tasks.map((task) => (
-            <tr key={task.id}>
-              <td>{task.key}</td>
-              <td>
-                <strong>{task.title}</strong>
-                <span>{task.description}</span>
-              </td>
-              <td>
-                <select value={task.status} onChange={(event) => onMove(task, event.target.value as Status)}>
-                  {STATUSES.map((status) => (
-                    <option key={status}>{status}</option>
-                  ))}
-                </select>
-              </td>
-              <td>
-                <span className={`priority-chip ${task.priority.toLowerCase()}`}>{task.priority}</span>
-              </td>
-              <td className={isOverdue(task) ? "overdue" : ""}>{formatDate(task.dueDate)}</td>
-              <td>{formatDate(task.assignedAt)}</td>
-              <td>{task.blockedAt ? `Blocked ${formatDate(task.blockedAt)}` : task.completedAt ? `Done ${formatDate(task.completedAt)}` : "-"}</td>
-              <td>{task.progress}%</td>
-              <td>{task.owner}</td>
-              <td>
-                <button className="tiny-button" type="button" aria-label={`Edit ${task.key}`} onClick={() => onEdit(task)}>
-                  <Pencil size={15} />
-                </button>
-                <button className="tiny-button danger" type="button" aria-label={`Delete ${task.key}`} onClick={() => onDelete(task)}>
-                  <Trash2 size={15} />
-                </button>
-              </td>
-            </tr>
-          ))}
+          {tasks.map((task) => {
+            const pending = pendingTaskIds.has(task.id);
+            return (
+              <tr className={pending ? "sync-pending-row" : ""} key={task.id}>
+                <td>{task.key}</td>
+                <td>
+                  <strong>{task.title}</strong>
+                  <span>{task.description}</span>
+                </td>
+                <td>
+                  <select value={task.status} onChange={(event) => onMove(task, event.target.value as Status)} disabled={pending}>
+                    {STATUSES.map((status) => (
+                      <option key={status}>{status}</option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  <span className={`priority-chip ${task.priority.toLowerCase()}`}>{task.priority}</span>
+                </td>
+                <td className={isOverdue(task) ? "overdue" : ""}>{formatDate(task.dueDate)}</td>
+                <td>{formatDate(task.assignedAt)}</td>
+                <td>{task.blockedAt ? `Blocked ${formatDate(task.blockedAt)}` : task.completedAt ? `Done ${formatDate(task.completedAt)}` : "-"}</td>
+                <td>{task.progress}%</td>
+                <td>{task.owner}</td>
+                <td>
+                  {pending && <span className="row-sync">Syncing</span>}
+                  <button className="tiny-button" type="button" aria-label={`Edit ${task.key}`} onClick={() => onEdit(task)} disabled={pending}>
+                    <Pencil size={15} />
+                  </button>
+                  <button className="tiny-button danger" type="button" aria-label={`Delete ${task.key}`} onClick={() => onDelete(task)} disabled={pending}>
+                    <Trash2 size={15} />
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </section>
@@ -1041,10 +1141,12 @@ function FocusView({
   tasks,
   onEdit,
   onMove,
+  pendingTaskIds,
 }: {
   tasks: Task[];
   onEdit: (task: Task) => void;
   onMove: (task: Task, status: Status) => void;
+  pendingTaskIds: Set<string>;
 }) {
   const focus = tasks.filter((task) => task.status !== "Done" && (isDueToday(task) || isOverdue(task) || task.status === "Today"));
   const upcoming = tasks
@@ -1059,21 +1161,24 @@ function FocusView({
           <span>{focus.length}</span>
         </div>
         <div className="focus-stack">
-          {focus.map((task) => (
-            <article className="focus-row" key={task.id}>
-              <span className={`priority-dot ${task.priority.toLowerCase()}`} />
-              <button type="button" className="focus-title" onClick={() => onEdit(task)}>
-                <strong>{task.title}</strong>
-                <em>{task.key}</em>
-              </button>
-              <span className={isOverdue(task) ? "overdue" : ""}>{formatDate(task.dueDate)}</span>
-              <select value={task.status} onChange={(event) => onMove(task, event.target.value as Status)}>
-                {STATUSES.map((status) => (
-                  <option key={status}>{status}</option>
-                ))}
-              </select>
-            </article>
-          ))}
+          {focus.map((task) => {
+            const pending = pendingTaskIds.has(task.id);
+            return (
+              <article className={`focus-row ${pending ? "sync-pending-row" : ""}`} key={task.id}>
+                <span className={`priority-dot ${task.priority.toLowerCase()}`} />
+                <button type="button" className="focus-title" onClick={() => onEdit(task)} disabled={pending}>
+                  <strong>{task.title}</strong>
+                  <em>{pending ? `${task.key} syncing` : task.key}</em>
+                </button>
+                <span className={isOverdue(task) ? "overdue" : ""}>{formatDate(task.dueDate)}</span>
+                <select value={task.status} onChange={(event) => onMove(task, event.target.value as Status)} disabled={pending}>
+                  {STATUSES.map((status) => (
+                    <option key={status}>{status}</option>
+                  ))}
+                </select>
+              </article>
+            );
+          })}
         </div>
       </div>
       <aside className="upcoming-panel">
@@ -1296,7 +1401,7 @@ function SettingsDialog({
           <span className="field-help">This is only the storage Sheet link shown in the header. It is not the sync API URL.</span>
         </label>
         <div className="settings-status">
-          <SyncPill state={syncState} message={syncMessage} local={!isAppsScriptUrl(settings.scriptUrl)} />
+          <SyncPill state={syncState} message={syncMessage} local={!canSyncToSheet(settings)} />
           <button className="primary-button" type="button" onClick={onLoad}>
             <RefreshCw size={18} />
             Load Sheet

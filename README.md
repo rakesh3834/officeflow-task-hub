@@ -11,7 +11,8 @@ The app gives you:
 - Date filters for due, start, assigned, blocked, completed, created, updated, and status-changed dates
 - Priority, type, sprint, owner, due date, labels, notes, and progress fields
 - Explanatory activity history with field-level changes
-- Google Sheet sync through the included Apps Script API on every create, edit, move, and delete
+- Sheet-confirmed CRUD sync through the included Apps Script API on every create, edit, move, and delete
+- Automatic Sheet refresh every 30 seconds while the app is open and connected
 
 ## Daily Workflow
 
@@ -20,7 +21,7 @@ The app gives you:
 3. Work from the `Board`, `List`, or `Focus` view.
 4. Move tasks between `Backlog`, `Today`, `In Progress`, `Blocked`, and `Done`.
 5. Use the clickable summary cards and date filters to review open, due today, overdue, blocked, completed, assigned, or recently changed tasks.
-6. Every create, edit, move, and delete is written to the Sheet when the Apps Script URL and token are configured.
+6. Every create, edit, move, and delete is sent to Apps Script immediately when the Apps Script URL and token are configured. The UI shows `Syncing`, confirms the Sheet response, and restores the previous task if the Sheet write fails.
 
 ## Google Sheet
 
@@ -34,7 +35,7 @@ Data storage:
 - Google Sheet `Activity` tab: the permanent activity/audit trail.
 - Apps Script property `APP_TOKEN`: the private token used to protect write access.
 
-Local-only mode means the app is usable in your browser, but changes are saved only on that device until you connect the Apps Script Web App URL and token. To make the Google Sheet the permanent database, configure Settings and click `Load Sheet`.
+Local-only mode means the app is usable in your browser, but changes are saved only on that device until you connect the Apps Script Web App URL and token. To make the Google Sheet the permanent database, configure Settings and click `Load Sheet`. Once connected, the app also checks the Sheet every 30 seconds while the browser tab is visible.
 
 Tabs:
 
