@@ -29,10 +29,12 @@ https://docs.google.com/spreadsheets/d/1aju4zHHcERO3jJeUjyKbqLh3reqak-ikdAU9ZHqj
 
 Data storage:
 
-- Browser `localStorage`: keeps your local preferences and cached task board on the device.
+- Browser `localStorage`: keeps your local preferences and cached task board on the device. This is what the app calls local-only mode when Sheet sync is not connected.
 - Google Sheet `Tasks` tab: the permanent task database.
 - Google Sheet `Activity` tab: the permanent activity/audit trail.
 - Apps Script property `APP_TOKEN`: the private token used to protect write access.
+
+Local-only mode means the app is usable in your browser, but changes are saved only on that device until you connect the Apps Script Web App URL and token. To make the Google Sheet the permanent database, configure Settings and click `Load Sheet`.
 
 Tabs:
 
@@ -54,7 +56,11 @@ Tabs:
    - Execute as: Me
    - Who has access: Anyone with the link
 7. Copy the Web app URL.
-8. In OfficeFlow, open Settings, paste the Web app URL and the same token, then click Load Sheet.
+8. In OfficeFlow, open Settings, paste the Web app URL ending in `/exec` and the same token, then click Load Sheet.
+
+## Troubleshooting
+
+If you see `Unexpected token '<'`, the app received an HTML page instead of the JSON data it expects. This usually means the Apps Script URL field contains the Google Sheet URL, GitHub Pages URL, localhost URL, or an Apps Script editor URL. Use only the deployed Apps Script Web App URL ending in `/exec`.
 
 ## Local Development
 

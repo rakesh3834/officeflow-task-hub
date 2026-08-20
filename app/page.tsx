@@ -105,6 +105,7 @@ const ACTIVITY_KEY = "officeflow.activity";
 const SETTINGS_KEY = "officeflow.settings";
 const OFFICE_LOCALE = "en-GB";
 const OFFICE_TIME_ZONE = "Asia/Kolkata";
+const APPS_SCRIPT_URL_PATTERN = /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/i;
 const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-GB", {
   timeZone: OFFICE_TIME_ZONE,
   year: "numeric",
@@ -147,6 +148,10 @@ function dateKeyFromDate(date: Date) {
 
 const todayKey = () => dateKeyFromDate(new Date());
 const nowIso = () => new Date().toISOString();
+
+function isAppsScriptUrl(value: string) {
+  return APPS_SCRIPT_URL_PATTERN.test(value.trim());
+}
 
 function shiftDate(days: number) {
   const date = new Date();
@@ -462,15 +467,31 @@ async function sheetRequest<T>(
   action: string,
   payload: Record<string, unknown> = {},
 ): Promise<T> {
-  if (!settings.scriptUrl) {
+  const scriptUrl = settings.scriptUrl.trim();
+  if (!scriptUrl) {
     throw new Error("Apps Script URL is missing.");
   }
-  const response = await fetch(settings.scriptUrl, {
+  if (!isAppsScriptUrl(scriptUrl)) {
+    throw new Error("Paste the Apps Script Web App URL ending in /exec. The Sheet URL, GitHub Pages URL, and localhost URL cannot sync data.");
+  }
+  const response = await fetch(scriptUrl, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify({ action, token: settings.token, actor: settings.actor, ...payload }),
   });
-  const result = await response.json();
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error("Apps Script did not accept the request. Check the Web App deployment access and URL.");
+  }
+  if (text.trim().startsWith("<")) {
+    throw new Error("Apps Script returned an HTML page instead of data. Use the deployed Web App URL ending in /exec, not the Google Sheet, GitHub, or localhost URL.");
+  }
+  let result: { ok?: boolean; error?: string; data?: T };
+  try {
+    result = JSON.parse(text) as { ok?: boolean; error?: string; data?: T };
+  } catch {
+    throw new Error("Apps Script returned a response the app could not read. Redeploy the Apps Script Web App and paste its /exec URL in Settings.");
+  }
   if (!result.ok) {
     throw new Error(result.error || "Sheet request failed.");
   }
@@ -493,7 +514,7 @@ export default function Home() {
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [syncState, setSyncState] = useState<"local" | "syncing" | "synced" | "error">("local");
-  const [syncMessage, setSyncMessage] = useState("Local workspace");
+  const [syncMessage, setSyncMessage] = useState("Local only - Sheet sync not connected");
   const [draggedId, setDraggedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -564,7 +585,7 @@ export default function Home() {
     };
   }, [tasks]);
 
-  const syncEnabled = Boolean(settings.scriptUrl.trim());
+  const syncEnabled = isAppsScriptUrl(settings.scriptUrl);
 
   function chooseQuickFilter(filter: QuickFilter) {
     setQuickFilter((current) => (current === filter ? "all" : filter));
@@ -1247,8 +1268,13 @@ function SettingsDialog({
           </button>
         </div>
         <label className="field wide">
-          Apps Script URL
-          <input value={settings.scriptUrl} onChange={(event) => onChange({ ...settings, scriptUrl: event.target.value })} />
+          Apps Script Web App URL
+          <input
+            value={settings.scriptUrl}
+            placeholder="https://script.google.com/macros/s/.../exec"
+            onChange={(event) => onChange({ ...settings, scriptUrl: event.target.value })}
+          />
+          <span className="field-help">Required for Sheet sync. Paste the deployed Apps Script Web App URL ending in /exec.</span>
         </label>
         <label className="field wide">
           App token
@@ -1258,6 +1284,7 @@ function SettingsDialog({
               Generate
             </button>
           </div>
+          <span className="field-help">This must match the APP_TOKEN saved in Apps Script project settings.</span>
         </label>
         <label className="field wide">
           Actor
@@ -1266,9 +1293,10 @@ function SettingsDialog({
         <label className="field wide">
           Sheet URL
           <input value={settings.sheetUrl} onChange={(event) => onChange({ ...settings, sheetUrl: event.target.value })} />
+          <span className="field-help">This is only the storage Sheet link shown in the header. It is not the sync API URL.</span>
         </label>
         <div className="settings-status">
-          <SyncPill state={syncState} message={syncMessage} local={!settings.scriptUrl} />
+          <SyncPill state={syncState} message={syncMessage} local={!isAppsScriptUrl(settings.scriptUrl)} />
           <button className="primary-button" type="button" onClick={onLoad}>
             <RefreshCw size={18} />
             Load Sheet
