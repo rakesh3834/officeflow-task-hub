@@ -486,6 +486,12 @@ function removeActivityEntries(activity: Activity[], entries: Activity[]) {
   return activity.filter((item) => !signatures.has(activitySignature(item)));
 }
 
+type SheetResponse<T> = {
+  ok?: boolean;
+  error?: string;
+  data?: T;
+};
+
 async function sheetRequest<T>(
   settings: Settings,
   action: string,
@@ -502,28 +508,51 @@ async function sheetRequest<T>(
   if (!token) {
     throw new Error("App token is missing. Add the same token in OfficeFlow Settings and Apps Script APP_TOKEN.");
   }
-  const response = await fetch(scriptUrl, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action, token, actor: settings.actor || "User", ...payload }),
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    throw new Error("Sheet sync runs in the browser.");
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const callbackName = `__officeflowSheet_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const callbacks = window as Window & Record<string, (result: SheetResponse<T>) => void>;
+    const script = document.createElement("script");
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Apps Script did not respond. Confirm the Web App URL ends in /exec, the deployment access is Anyone, and the latest Code.gs is redeployed."));
+    }, 15000);
+
+    function cleanup() {
+      window.clearTimeout(timeoutId);
+      delete callbacks[callbackName];
+      script.remove();
+    }
+
+    callbacks[callbackName] = (result) => {
+      cleanup();
+      if (!result?.ok) {
+        reject(new Error(result?.error || "Sheet request failed."));
+        return;
+      }
+      resolve(result.data as T);
+    };
+
+    const url = new URL(scriptUrl);
+    url.searchParams.set("callback", callbackName);
+    url.searchParams.set("action", action);
+    url.searchParams.set("token", token);
+    url.searchParams.set("actor", settings.actor || "User");
+    if (Object.keys(payload).length) {
+      url.searchParams.set("payload", JSON.stringify(payload));
+    }
+
+    script.onerror = () => {
+      cleanup();
+      reject(new Error("Could not load the Apps Script Web App. Paste the deployed /exec URL and redeploy Apps Script as Anyone with the link."));
+    };
+    script.async = true;
+    script.src = url.toString();
+    document.body.appendChild(script);
   });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error("Apps Script did not accept the request. Check the Web App deployment access and URL.");
-  }
-  if (text.trim().startsWith("<")) {
-    throw new Error("Apps Script returned an HTML page instead of data. Use the deployed Web App URL ending in /exec, not the Google Sheet, GitHub, or localhost URL.");
-  }
-  let result: { ok?: boolean; error?: string; data?: T };
-  try {
-    result = JSON.parse(text) as { ok?: boolean; error?: string; data?: T };
-  } catch {
-    throw new Error("Apps Script returned a response the app could not read. Redeploy the Apps Script Web App and paste its /exec URL in Settings.");
-  }
-  if (!result.ok) {
-    throw new Error(result.error || "Sheet request failed.");
-  }
-  return result.data as T;
 }
 
 export default function Home() {

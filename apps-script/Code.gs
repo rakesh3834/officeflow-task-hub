@@ -38,7 +38,18 @@ const ACTIVITY_HEADERS = [
   "Actor",
 ];
 
-function doGet() {
+function doGet(e) {
+  const params = (e && e.parameter) || {};
+  if (params.callback) {
+    let result;
+    try {
+      result = handleRequest(getPayloadFromParams(params));
+    } catch (error) {
+      result = { ok: false, error: error.message || String(error) };
+    }
+    return jsonpResponse(params.callback, result);
+  }
+
   return jsonResponse({
     ok: true,
     data: {
@@ -51,29 +62,42 @@ function doGet() {
 function doPost(e) {
   try {
     const payload = JSON.parse((e.postData && e.postData.contents) || "{}");
-    verifyToken(payload.token);
-
-    switch (payload.action) {
-      case "list":
-        return jsonResponse({
-          ok: true,
-          data: {
-            tasks: listTasks(),
-            activity: listActivity(),
-            options: listOptions(),
-          },
-        });
-      case "saveTask":
-        return jsonResponse({ ok: true, data: saveTask(payload.task, payload.activities || payload.activity) });
-      case "deleteTask":
-        return jsonResponse({ ok: true, data: deleteTask(payload.id, payload.activities || payload.activity) });
-      case "ping":
-        return jsonResponse({ ok: true, data: { message: "Connected" } });
-      default:
-        throw new Error("Unknown action: " + payload.action);
-    }
+    return jsonResponse(handleRequest(payload));
   } catch (error) {
     return jsonResponse({ ok: false, error: error.message || String(error) });
+  }
+}
+
+function getPayloadFromParams(params) {
+  const payload = params.payload ? JSON.parse(params.payload) : {};
+  payload.action = params.action || payload.action;
+  payload.token = params.token || payload.token;
+  payload.actor = params.actor || payload.actor;
+  return payload;
+}
+
+function handleRequest(payload) {
+  payload = payload || {};
+  verifyToken(payload.token);
+
+  switch (payload.action) {
+    case "list":
+      return {
+        ok: true,
+        data: {
+          tasks: listTasks(),
+          activity: listActivity(),
+          options: listOptions(),
+        },
+      };
+    case "saveTask":
+      return { ok: true, data: saveTask(payload.task, payload.activities || payload.activity) };
+    case "deleteTask":
+      return { ok: true, data: deleteTask(payload.id, payload.activities || payload.activity) };
+    case "ping":
+      return { ok: true, data: { message: "Connected" } };
+    default:
+      throw new Error("Unknown action: " + payload.action);
   }
 }
 
@@ -382,5 +406,16 @@ function toSheetDateTime(value) {
 function jsonResponse(payload) {
   return ContentService.createTextOutput(JSON.stringify(payload)).setMimeType(
     ContentService.MimeType.JSON,
+  );
+}
+
+function jsonpResponse(callback, payload) {
+  if (!/^[A-Za-z_$][0-9A-Za-z_$]*(\.[A-Za-z_$][0-9A-Za-z_$]*)*$/.test(callback)) {
+    return ContentService.createTextOutput("/* Invalid callback */").setMimeType(
+      ContentService.MimeType.JAVASCRIPT,
+    );
+  }
+  return ContentService.createTextOutput(callback + "(" + JSON.stringify(payload) + ");").setMimeType(
+    ContentService.MimeType.JAVASCRIPT,
   );
 }

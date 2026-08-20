@@ -63,6 +63,8 @@ Tabs:
 
 If you see `Unexpected token '<'`, the app received an HTML page instead of the JSON data it expects. This usually means the Apps Script URL field contains the Google Sheet URL, GitHub Pages URL, localhost URL, or an Apps Script editor URL. Use only the deployed Apps Script Web App URL ending in `/exec`.
 
+If you see `Failed to fetch` or `Apps Script did not respond`, replace the Apps Script editor code with the latest `apps-script/Code.gs`, redeploy the Web App, and paste the new deployment URL ending in `/exec` into OfficeFlow Settings. The app uses Apps Script JSONP responses so it can read Sheet results from GitHub Pages and localhost.
+
 ## Local Development
 
 ```bash
