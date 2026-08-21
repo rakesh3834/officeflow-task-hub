@@ -16,7 +16,7 @@ The app gives you:
 
 ## Daily Workflow
 
-1. Open OfficeFlow and click `Load Sheet` if you want the latest Google Sheet records.
+1. Open OfficeFlow, connect Settings, and click `Load Sheet`. The sync pill should turn green before daily CRUD work.
 2. Add a task with `New task`, set the owner, priority, type, due date, sprint, labels, notes, and progress. Labels are comma-separated tags, such as `finance`, `approval`, or `client-a`, used to group and search related tasks.
 3. Work from the `Board`, `List`, or `Focus` view.
 4. Move tasks between `Backlog`, `Today`, `In Progress`, `Blocked`, and `Done`.
@@ -38,7 +38,7 @@ Data storage:
 - Google Sheet `Activity` tab: the permanent activity/audit trail.
 - Apps Script property `APP_TOKEN`: the private token used to protect write access.
 
-Local-only mode means the app is usable in your browser, but changes are saved only on that device until you connect the Apps Script Web App URL and token. To make the Google Sheet the permanent database, configure Settings and click `Load Sheet`. Once connected, the app also checks the Sheet every 30 seconds while the browser tab is visible.
+Local-only mode means the visible board is only the browser cache for that device and domain. CRUD is paused until you connect the Apps Script Web App URL, add the token, and click `Load Sheet`. Once connected, the app writes every create, edit, move, and delete to the Sheet, keeps a browser cache for speed, and checks the Sheet every 30 seconds while the browser tab is visible.
 
 Tabs:
 

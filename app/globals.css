@@ -72,6 +72,7 @@ a {
 }
 
 .topbar,
+.sync-warning,
 .workspace-toolbar,
 .filter-bar,
 .activity-panel,
@@ -93,6 +94,38 @@ a {
   gap: 16px;
   padding: 14px;
   box-shadow: 0 1px 0 rgba(10, 15, 25, 0.04);
+}
+
+.sync-warning {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-color: #f4b9b9;
+  background: #fff7f7;
+  color: #8a1f1f;
+}
+
+.sync-warning > svg {
+  flex: 0 0 auto;
+}
+
+.sync-warning div {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sync-warning strong {
+  font-size: 14px;
+}
+
+.sync-warning span {
+  color: #6f2a2a;
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .brand-block,

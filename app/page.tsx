@@ -158,9 +158,15 @@ function canSyncToSheet(settings: Settings) {
 }
 
 function localSyncMessage(settings: Settings) {
-  if (!isAppsScriptUrl(settings.scriptUrl)) return "Local only - add Apps Script URL";
-  if (!settings.token.trim()) return "Local only - add app token";
-  return "Local only - Sheet sync not connected";
+  if (!isAppsScriptUrl(settings.scriptUrl)) return "Sheet sync paused - add Apps Script URL";
+  if (!settings.token.trim()) return "Sheet sync paused - add app token";
+  return "Sheet sync paused - click Load Sheet";
+}
+
+function sheetWriteBlockedMessage(settings: Settings) {
+  if (!isAppsScriptUrl(settings.scriptUrl)) return "Add the Apps Script URL before changing tasks.";
+  if (!settings.token.trim()) return "Add the app token before changing tasks.";
+  return "Load the Google Sheet before changing tasks.";
 }
 
 function shiftDate(days: number) {
@@ -744,8 +750,9 @@ export default function Home() {
   const pendingTaskIdSet = useMemo(() => new Set(pendingTaskIds), [pendingTaskIds]);
   const hasPendingWrites = pendingTaskIds.length > 0;
   const currentLocalSyncMessage = useMemo(() => localSyncMessage(settings), [settings]);
-  const visibleSyncState = syncEnabled ? syncState : "local";
-  const visibleSyncMessage = syncEnabled ? syncMessage : currentLocalSyncMessage;
+  const currentBlockedWriteMessage = useMemo(() => sheetWriteBlockedMessage(settings), [settings]);
+  const visibleSyncState = syncEnabled ? syncState : syncState === "error" ? "error" : "local";
+  const visibleSyncMessage = syncEnabled ? syncMessage : syncState === "error" ? syncMessage : currentLocalSyncMessage;
 
   const markTaskPending = useCallback((taskId: string, pending: boolean) => {
     setPendingTaskIds((current) => {
@@ -802,18 +809,22 @@ export default function Home() {
     setQuery("");
   }
 
+  function requireSheetSyncForWrites() {
+    if (syncEnabled) return true;
+    setSyncState("error");
+    setSyncMessage(currentBlockedWriteMessage);
+    setShowSettings(true);
+    return false;
+  }
+
   async function persistTask(task: Task, action: "create" | "update" = "update") {
+    if (!requireSheetSyncForWrites()) return false;
+
     const previousTask = tasks.find((item) => item.id === task.id);
     const savedTask = stampTaskWorkflow(task, action === "create" ? undefined : previousTask);
     const entries = buildActivityEntries(action === "create" ? undefined : previousTask, savedTask, action, settings.actor || "User");
     setTasks((current) => upsertTask(current, savedTask));
     setActivity((current) => [...entries, ...current].slice(0, 80));
-
-    if (!syncEnabled) {
-      setSyncState("local");
-      setSyncMessage(currentLocalSyncMessage);
-      return;
-    }
 
     markTaskPending(savedTask.id, true);
     setSyncState("syncing");
@@ -824,6 +835,7 @@ export default function Home() {
       setTasks((current) => upsertTask(current, confirmedTask));
       setSyncState("synced");
       setSyncMessage(`Saved to Sheet ${TIME_FORMATTER.format(new Date())}`);
+      return true;
     } catch (error) {
       setTasks((current) => {
         if (previousTask) return current.map((item) => (item.id === savedTask.id ? previousTask : item));
@@ -832,6 +844,7 @@ export default function Home() {
       setActivity((current) => removeActivityEntries(current, entries));
       setSyncState("error");
       setSyncMessage(error instanceof Error ? error.message : "Save failed");
+      return false;
     } finally {
       markTaskPending(savedTask.id, false);
     }
@@ -844,6 +857,8 @@ export default function Home() {
   }
 
   async function deleteTask(task: Task) {
+    if (!requireSheetSyncForWrites()) return;
+
     setTasks((current) => current.filter((item) => item.id !== task.id));
     const entry: Activity = {
       timestamp: nowIso(),
@@ -856,11 +871,6 @@ export default function Home() {
       actor: settings.actor || "User",
     };
     setActivity((current) => [entry, ...current].slice(0, 80));
-    if (!syncEnabled) {
-      setSyncState("local");
-      setSyncMessage(currentLocalSyncMessage);
-      return;
-    }
 
     markTaskPending(task.id, true);
     setSyncState("syncing");
@@ -880,6 +890,8 @@ export default function Home() {
   }
 
   function newTask() {
+    if (!requireSheetSyncForWrites()) return;
+
     setEditingTask({
       ...emptyTask(),
       id: crypto.randomUUID(),
@@ -927,6 +939,19 @@ export default function Home() {
           </button>
         </div>
       </header>
+
+      {!syncEnabled && (
+        <section className="sync-warning" role="status" aria-label="Google Sheet sync required">
+          <CloudOff size={18} />
+          <div>
+            <strong>Google Sheet is not connected</strong>
+            <span>The visible board is browser cache. Connect Settings and Load Sheet before create, edit, move, or delete.</span>
+          </div>
+          <button className="ghost-button" type="button" onClick={() => setShowSettings(true)}>
+            Connect
+          </button>
+        </section>
+      )}
 
       <section className="metrics-strip" aria-label="Task summary">
         <Metric label="Open" value={metrics.open} tone="blue" active={quickFilter === "open"} icon={<CircleDot size={18} />} onClick={() => chooseQuickFilter("open")} />
@@ -1072,10 +1097,7 @@ export default function Home() {
         <TaskDialog
           task={editingTask}
           onClose={() => setEditingTask(null)}
-          onSave={(task, isNew) => {
-            void persistTask(task, isNew ? "create" : "update");
-            setEditingTask(null);
-          }}
+          onSave={(task, isNew) => persistTask(task, isNew ? "create" : "update")}
         />
       )}
 
@@ -1330,16 +1352,18 @@ function TaskDialog({
   onClose,
 }: {
   task: Task;
-  onSave: (task: Task, isNew: boolean) => void;
+  onSave: (task: Task, isNew: boolean) => Promise<boolean>;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Task>(normalizeTask(task));
+  const [isSaving, setIsSaving] = useState(false);
   const isNew = !task.createdAt;
   const setField = <K extends keyof Task>(key: K, value: Task[K]) => setDraft((current) => ({ ...current, [key]: value }));
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    onSave(
+    setIsSaving(true);
+    const saved = await onSave(
       normalizeTask({
         ...draft,
         createdAt: draft.createdAt || nowIso(),
@@ -1347,6 +1371,8 @@ function TaskDialog({
       }),
       isNew,
     );
+    setIsSaving(false);
+    if (saved) onClose();
   }
 
   return (
@@ -1459,9 +1485,9 @@ function TaskDialog({
           <button className="ghost-button" type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="primary-button" type="submit">
-            <Save size={18} />
-            Save task
+          <button className="primary-button" type="submit" disabled={isSaving}>
+            {isSaving ? <Loader2 className="spin" size={18} /> : <Save size={18} />}
+            {isSaving ? "Saving" : "Save task"}
           </button>
         </div>
       </form>
