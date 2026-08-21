@@ -28,6 +28,9 @@ The app gives you:
 Storage Sheet:
 https://docs.google.com/spreadsheets/d/1aju4zHHcERO3jJeUjyKbqLh3reqak-ikdAU9ZHqjZk4
 
+Recommended app URL for daily use:
+https://officeflow-task-hub.rakesh-collegedunia.chatgpt.site
+
 Data storage:
 
 - Browser `localStorage`: keeps your local preferences and cached task board on the device. This is what the app calls local-only mode when Sheet sync is not connected.
@@ -63,7 +66,7 @@ Tabs:
 
 If you see `Unexpected token '<'`, the app received an HTML page instead of the JSON data it expects. This usually means the Apps Script URL field contains the Google Sheet URL, GitHub Pages URL, localhost URL, or an Apps Script editor URL. Use only the deployed Apps Script Web App URL ending in `/exec`.
 
-If you see `Failed to fetch`, `Could not load the Apps Script Web App`, or `Apps Script did not respond`, replace the Apps Script editor code with the latest `apps-script/Code.gs`, redeploy the Web App, and paste the new deployment URL ending in `/exec` into OfficeFlow Settings. The app uses Apps Script JSONP first and an iframe fallback so it can read Sheet results from GitHub Pages and localhost.
+If you see `Failed to fetch`, `Could not load the Apps Script Web App`, or `Apps Script did not respond`, use the hosted OfficeFlow URL above. It has a same-origin `/api/sheet` proxy that talks to Apps Script from the server side, avoiding browser extension and CORS blocks. GitHub Pages remains available as a static fallback.
 
 ## Local Development
 

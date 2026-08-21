@@ -498,6 +498,14 @@ type SheetMessage<T> = {
   result?: SheetResponse<T>;
 };
 
+type SheetRequestPayload = {
+  scriptUrl: string;
+  token: string;
+  actor: string;
+  action: string;
+  payload: Record<string, unknown>;
+};
+
 async function sheetRequest<T>(
   settings: Settings,
   action: string,
@@ -518,12 +526,23 @@ async function sheetRequest<T>(
     throw new Error("Sheet sync runs in the browser.");
   }
 
-  const url = buildSheetRequestUrl(scriptUrl, token, settings.actor || "User", action, payload);
+  const requestPayload = {
+    scriptUrl,
+    token,
+    actor: settings.actor || "User",
+    action,
+    payload,
+  };
+  const url = buildSheetRequestUrl(scriptUrl, token, requestPayload.actor, action, payload);
   let result: SheetResponse<T>;
   try {
-    result = await requestSheetViaJsonp<T>(url);
+    result = await requestSheetViaProxy<T>(requestPayload);
   } catch {
-    result = await requestSheetViaFrame<T>(url);
+    try {
+      result = await requestSheetViaJsonp<T>(url);
+    } catch {
+      result = await requestSheetViaFrame<T>(url);
+    }
   }
   if (!result?.ok) {
     throw new Error(result?.error || "Sheet request failed.");
@@ -546,6 +565,23 @@ function buildSheetRequestUrl(
     url.searchParams.set("payload", JSON.stringify(payload));
   }
   return url;
+}
+
+async function requestSheetViaProxy<T>(payload: SheetRequestPayload) {
+  const response = await fetch("/api/sheet", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new Error("Sheet proxy is not available on this host.");
+  }
+  const result = (await response.json()) as SheetResponse<T>;
+  if (!response.ok && !result?.error) {
+    throw new Error("Sheet proxy request failed.");
+  }
+  return result;
 }
 
 function requestSheetViaJsonp<T>(baseUrl: URL) {
