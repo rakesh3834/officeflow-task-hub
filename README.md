@@ -88,8 +88,9 @@ This project uses the Vinext/Sites starter, so it is best deployed from a GitHub
 ## GitHub Pages
 
 The repository includes a GitHub Actions workflow at `.github/workflows/pages.yml`.
-When GitHub Pages is enabled for the repository, every push to `main` builds the static app and deploys it to GitHub Pages.
+When GitHub Pages is enabled for the repository, every push to `main` deploys a small redirect page to GitHub Pages.
 GitHub Pages may require the repository to be public, depending on the GitHub plan.
+The GitHub Pages URL redirects to the worker-backed OfficeFlow app because Sheet sync needs the `/api/sheet` server proxy.
 
 For local verification of the GitHub Pages build:
 
@@ -97,7 +98,8 @@ For local verification of the GitHub Pages build:
 npm run build:pages
 ```
 
-The deployed app still saves task data to Google Sheets through the Apps Script URL configured in Settings.
+Use the worker-backed OfficeFlow URL for daily work:
+https://officeflow-task-hub.rakesh-collegedunia.chatgpt.site
 
 ## Files To Know
 
