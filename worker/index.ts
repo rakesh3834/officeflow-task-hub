@@ -89,7 +89,7 @@ async function handleSheetProxy(request: Request): Promise<Response> {
   }
 
   try {
-    const appsScriptResponse = await fetch(scriptUrl, {
+    let appsScriptResponse = await fetch(scriptUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
@@ -98,7 +98,18 @@ async function handleSheetProxy(request: Request): Promise<Response> {
         actor: body.actor || "User",
         ...(body.payload || {}),
       }),
+      redirect: "manual",
     });
+    if (appsScriptResponse.status >= 300 && appsScriptResponse.status < 400) {
+      const redirectLocation = appsScriptResponse.headers.get("Location");
+      if (!redirectLocation) {
+        return jsonResponse({ ok: false, error: "Apps Script redirected without a response URL." }, 502);
+      }
+      appsScriptResponse = await fetch(new URL(redirectLocation, scriptUrl).toString(), {
+        method: "GET",
+        redirect: "follow",
+      });
+    }
     const text = await appsScriptResponse.text();
     if (text.trim().startsWith("<")) {
       return jsonResponse(
