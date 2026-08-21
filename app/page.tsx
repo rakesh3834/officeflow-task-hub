@@ -492,6 +492,12 @@ type SheetResponse<T> = {
   data?: T;
 };
 
+type SheetMessage<T> = {
+  source?: string;
+  requestId?: string;
+  result?: SheetResponse<T>;
+};
+
 async function sheetRequest<T>(
   settings: Settings,
   action: string,
@@ -512,7 +518,38 @@ async function sheetRequest<T>(
     throw new Error("Sheet sync runs in the browser.");
   }
 
-  return new Promise<T>((resolve, reject) => {
+  const url = buildSheetRequestUrl(scriptUrl, token, settings.actor || "User", action, payload);
+  let result: SheetResponse<T>;
+  try {
+    result = await requestSheetViaJsonp<T>(url);
+  } catch {
+    result = await requestSheetViaFrame<T>(url);
+  }
+  if (!result?.ok) {
+    throw new Error(result?.error || "Sheet request failed.");
+  }
+  return result.data as T;
+}
+
+function buildSheetRequestUrl(
+  scriptUrl: string,
+  token: string,
+  actor: string,
+  action: string,
+  payload: Record<string, unknown>,
+) {
+  const url = new URL(scriptUrl);
+  url.searchParams.set("action", action);
+  url.searchParams.set("token", token);
+  url.searchParams.set("actor", actor);
+  if (Object.keys(payload).length) {
+    url.searchParams.set("payload", JSON.stringify(payload));
+  }
+  return url;
+}
+
+function requestSheetViaJsonp<T>(baseUrl: URL) {
+  return new Promise<SheetResponse<T>>((resolve, reject) => {
     const callbackName = `__officeflowSheet_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const callbacks = window as Window & Record<string, (result: SheetResponse<T>) => void>;
     const script = document.createElement("script");
@@ -529,21 +566,11 @@ async function sheetRequest<T>(
 
     callbacks[callbackName] = (result) => {
       cleanup();
-      if (!result?.ok) {
-        reject(new Error(result?.error || "Sheet request failed."));
-        return;
-      }
-      resolve(result.data as T);
+      resolve(result);
     };
 
-    const url = new URL(scriptUrl);
+    const url = new URL(baseUrl);
     url.searchParams.set("callback", callbackName);
-    url.searchParams.set("action", action);
-    url.searchParams.set("token", token);
-    url.searchParams.set("actor", settings.actor || "User");
-    if (Object.keys(payload).length) {
-      url.searchParams.set("payload", JSON.stringify(payload));
-    }
 
     script.onerror = () => {
       cleanup();
@@ -552,6 +579,40 @@ async function sheetRequest<T>(
     script.async = true;
     script.src = url.toString();
     document.body.appendChild(script);
+  });
+}
+
+function requestSheetViaFrame<T>(baseUrl: URL) {
+  return new Promise<SheetResponse<T>>((resolve, reject) => {
+    const requestId = `officeflowFrame_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const frame = document.createElement("iframe");
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Apps Script did not respond. Confirm the /exec URL, deployment access, and APP_TOKEN."));
+    }, 15000);
+
+    function cleanup() {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("message", handleMessage);
+      frame.remove();
+    }
+
+    function handleMessage(event: MessageEvent<SheetMessage<T>>) {
+      const message = event.data;
+      if (message?.source !== "officeflow-sheet" || message.requestId !== requestId) return;
+      cleanup();
+      resolve(message.result || { ok: false, error: "Apps Script returned an empty response." });
+    }
+
+    const url = new URL(baseUrl);
+    url.searchParams.set("transport", "frame");
+    url.searchParams.set("requestId", requestId);
+
+    frame.hidden = true;
+    frame.title = "OfficeFlow Sheet sync";
+    window.addEventListener("message", handleMessage);
+    frame.src = url.toString();
+    document.body.appendChild(frame);
   });
 }
 

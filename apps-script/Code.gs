@@ -40,6 +40,16 @@ const ACTIVITY_HEADERS = [
 
 function doGet(e) {
   const params = (e && e.parameter) || {};
+  if (params.transport === "frame") {
+    let result;
+    try {
+      result = handleRequest(getPayloadFromParams(params));
+    } catch (error) {
+      result = { ok: false, error: error.message || String(error) };
+    }
+    return frameResponse(params.requestId, result);
+  }
+
   if (params.callback) {
     let result;
     try {
@@ -417,5 +427,20 @@ function jsonpResponse(callback, payload) {
   }
   return ContentService.createTextOutput(callback + "(" + JSON.stringify(payload) + ");").setMimeType(
     ContentService.MimeType.JAVASCRIPT,
+  );
+}
+
+function frameResponse(requestId, payload) {
+  const message = {
+    source: "officeflow-sheet",
+    requestId: String(requestId || ""),
+    result: payload,
+  };
+  const html =
+    '<!doctype html><meta charset="utf-8"><script>parent.postMessage(' +
+    JSON.stringify(message).replace(/</g, "\\u003c") +
+    ', "*");</script>';
+  return HtmlService.createHtmlOutput(html).setXFrameOptionsMode(
+    HtmlService.XFrameOptionsMode.ALLOWALL,
   );
 }
