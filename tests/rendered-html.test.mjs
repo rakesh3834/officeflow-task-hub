@@ -37,6 +37,6 @@ test("server-renders OfficeFlow shell", async () => {
   assert.match(html, /Assigned at/);
   assert.match(html, /Status changed/);
   assert.match(html, /Recent Activity/);
-  assert.match(html, /Google Sheets-backed daily office task tracker/i);
+  assert.match(html, /Supabase-backed daily office task tracker/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });

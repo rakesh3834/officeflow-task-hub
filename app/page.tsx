@@ -10,8 +10,7 @@ import {
   Cloud,
   CloudOff,
   Columns3,
-  ExternalLink,
-  FileSpreadsheet,
+  Database,
   GripVertical,
   Kanban,
   ListChecks,
@@ -78,10 +77,7 @@ type Activity = {
 };
 
 type Settings = {
-  scriptUrl: string;
-  token: string;
   actor: string;
-  sheetUrl: string;
 };
 
 const STATUSES: Status[] = ["Backlog", "Today", "In Progress", "Blocked", "Done"];
@@ -98,14 +94,11 @@ const DATE_FILTERS: Array<{ label: string; value: DateField }> = [
   { label: "Updated at", value: "updatedAt" },
   { label: "Status changed", value: "statusChangedAt" },
 ];
-const SHEET_URL =
-  "https://docs.google.com/spreadsheets/d/1aju4zHHcERO3jJeUjyKbqLh3reqak-ikdAU9ZHqjZk4";
 const TASKS_KEY = "officeflow.tasks";
 const ACTIVITY_KEY = "officeflow.activity";
 const SETTINGS_KEY = "officeflow.settings";
 const OFFICE_LOCALE = "en-GB";
 const OFFICE_TIME_ZONE = "Asia/Kolkata";
-const APPS_SCRIPT_URL_PATTERN = /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/i;
 const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-GB", {
   timeZone: OFFICE_TIME_ZONE,
   year: "numeric",
@@ -132,10 +125,7 @@ const TIME_FORMATTER = new Intl.DateTimeFormat(OFFICE_LOCALE, {
   hour12: false,
 });
 const DEFAULT_SETTINGS: Settings = {
-  scriptUrl: "",
-  token: "",
   actor: "Rakesh",
-  sheetUrl: SHEET_URL,
 };
 
 function dateKeyFromDate(date: Date) {
@@ -149,24 +139,8 @@ function dateKeyFromDate(date: Date) {
 const todayKey = () => dateKeyFromDate(new Date());
 const nowIso = () => new Date().toISOString();
 
-function isAppsScriptUrl(value: string) {
-  return APPS_SCRIPT_URL_PATTERN.test(value.trim());
-}
-
-function canSyncToSheet(settings: Settings) {
-  return isAppsScriptUrl(settings.scriptUrl) && Boolean(settings.token.trim());
-}
-
-function localSyncMessage(settings: Settings) {
-  if (!isAppsScriptUrl(settings.scriptUrl)) return "Sheet sync paused - add Apps Script URL";
-  if (!settings.token.trim()) return "Sheet sync paused - add app token";
-  return "Sheet sync paused - click Load Sheet";
-}
-
-function sheetWriteBlockedMessage(settings: Settings) {
-  if (!isAppsScriptUrl(settings.scriptUrl)) return "Add the Apps Script URL before changing tasks.";
-  if (!settings.token.trim()) return "Add the app token before changing tasks.";
-  return "Load the Google Sheet before changing tasks.";
+function normalizeSettings(settings: Partial<Settings> | null | undefined): Settings {
+  return { actor: settings?.actor || DEFAULT_SETTINGS.actor };
 }
 
 function shiftDate(days: number) {
@@ -492,170 +466,28 @@ function removeActivityEntries(activity: Activity[], entries: Activity[]) {
   return activity.filter((item) => !signatures.has(activitySignature(item)));
 }
 
-type SheetResponse<T> = {
+type DataResponse<T> = {
   ok?: boolean;
   error?: string;
   data?: T;
 };
 
-type SheetMessage<T> = {
-  source?: string;
-  requestId?: string;
-  result?: SheetResponse<T>;
-};
-
-type SheetRequestPayload = {
-  scriptUrl: string;
-  token: string;
-  actor: string;
-  action: string;
-  payload: Record<string, unknown>;
-};
-
-async function sheetRequest<T>(
-  settings: Settings,
-  action: string,
-  payload: Record<string, unknown> = {},
-): Promise<T> {
-  const scriptUrl = settings.scriptUrl.trim();
-  if (!scriptUrl) {
-    throw new Error("Apps Script URL is missing.");
-  }
-  if (!isAppsScriptUrl(scriptUrl)) {
-    throw new Error("Paste the Apps Script Web App URL ending in /exec. The Sheet URL, GitHub Pages URL, and localhost URL cannot sync data.");
-  }
-  const token = settings.token.trim();
-  if (!token) {
-    throw new Error("App token is missing. Add the same token in OfficeFlow Settings and Apps Script APP_TOKEN.");
-  }
-  if (typeof window === "undefined" || typeof document === "undefined") {
-    throw new Error("Sheet sync runs in the browser.");
-  }
-
-  const requestPayload = {
-    scriptUrl,
-    token,
-    actor: settings.actor || "User",
-    action,
-    payload,
-  };
-  const url = buildSheetRequestUrl(scriptUrl, token, requestPayload.actor, action, payload);
-  let result: SheetResponse<T>;
-  try {
-    result = await requestSheetViaProxy<T>(requestPayload);
-  } catch {
-    try {
-      result = await requestSheetViaJsonp<T>(url);
-    } catch {
-      result = await requestSheetViaFrame<T>(url);
-    }
-  }
-  if (!result?.ok) {
-    throw new Error(result?.error || "Sheet request failed.");
-  }
-  return result.data as T;
-}
-
-function buildSheetRequestUrl(
-  scriptUrl: string,
-  token: string,
-  actor: string,
-  action: string,
-  payload: Record<string, unknown>,
-) {
-  const url = new URL(scriptUrl);
-  url.searchParams.set("action", action);
-  url.searchParams.set("token", token);
-  url.searchParams.set("actor", actor);
-  if (Object.keys(payload).length) {
-    url.searchParams.set("payload", JSON.stringify(payload));
-  }
-  return url;
-}
-
-async function requestSheetViaProxy<T>(payload: SheetRequestPayload) {
-  const response = await fetch("/api/sheet", {
+async function dataRequest<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
+  const response = await fetch("/api/tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ action, ...payload }),
   });
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
-    throw new Error("Sheet proxy is not available on this host.");
+    throw new Error("Supabase backend is not available on this host.");
   }
-  const result = (await response.json()) as SheetResponse<T>;
+  const result = (await response.json()) as DataResponse<T>;
   if (!response.ok && !result?.error) {
-    throw new Error("Sheet proxy request failed.");
+    throw new Error("Supabase request failed.");
   }
-  return result;
-}
-
-function requestSheetViaJsonp<T>(baseUrl: URL) {
-  return new Promise<SheetResponse<T>>((resolve, reject) => {
-    const callbackName = `__officeflowSheet_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const callbacks = window as Window & Record<string, (result: SheetResponse<T>) => void>;
-    const script = document.createElement("script");
-    const timeoutId = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("Apps Script did not respond. Confirm the Web App URL ends in /exec, the deployment access is Anyone, and the latest Code.gs is redeployed."));
-    }, 15000);
-
-    function cleanup() {
-      window.clearTimeout(timeoutId);
-      delete callbacks[callbackName];
-      script.remove();
-    }
-
-    callbacks[callbackName] = (result) => {
-      cleanup();
-      resolve(result);
-    };
-
-    const url = new URL(baseUrl);
-    url.searchParams.set("callback", callbackName);
-
-    script.onerror = () => {
-      cleanup();
-      reject(new Error("Could not load the Apps Script Web App. Paste the deployed /exec URL and redeploy Apps Script as Anyone with the link."));
-    };
-    script.async = true;
-    script.src = url.toString();
-    document.body.appendChild(script);
-  });
-}
-
-function requestSheetViaFrame<T>(baseUrl: URL) {
-  return new Promise<SheetResponse<T>>((resolve, reject) => {
-    const requestId = `officeflowFrame_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const frame = document.createElement("iframe");
-    const timeoutId = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("Apps Script did not respond. Confirm the /exec URL, deployment access, and APP_TOKEN."));
-    }, 15000);
-
-    function cleanup() {
-      window.clearTimeout(timeoutId);
-      window.removeEventListener("message", handleMessage);
-      frame.remove();
-    }
-
-    function handleMessage(event: MessageEvent<SheetMessage<T>>) {
-      const message = event.data;
-      if (message?.source !== "officeflow-sheet" || message.requestId !== requestId) return;
-      cleanup();
-      resolve(message.result || { ok: false, error: "Apps Script returned an empty response." });
-    }
-
-    const url = new URL(baseUrl);
-    url.searchParams.set("transport", "frame");
-    url.searchParams.set("requestId", requestId);
-
-    frame.hidden = true;
-    frame.title = "OfficeFlow Sheet sync";
-    window.addEventListener("message", handleMessage);
-    frame.src = url.toString();
-    document.body.appendChild(frame);
-  });
+  if (!result?.ok) throw new Error(result?.error || "Supabase request failed.");
+  return result.data as T;
 }
 
 export default function Home() {
@@ -673,8 +505,8 @@ export default function Home() {
   const [dateTo, setDateTo] = useState("");
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [syncState, setSyncState] = useState<"local" | "syncing" | "synced" | "error">("local");
-  const [syncMessage, setSyncMessage] = useState("Local only - Sheet sync not connected");
+  const [syncState, setSyncState] = useState<"local" | "syncing" | "synced" | "error">("syncing");
+  const [syncMessage, setSyncMessage] = useState("Connecting to Supabase");
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [pendingTaskIds, setPendingTaskIds] = useState<string[]>([]);
 
@@ -684,7 +516,7 @@ export default function Home() {
       if (!mounted) return;
       setTasks(loadJson(TASKS_KEY, seedTasks).map(normalizeTask));
       setActivity(loadJson(ACTIVITY_KEY, seedActivity));
-      setSettings(loadJson(SETTINGS_KEY, DEFAULT_SETTINGS));
+      setSettings(normalizeSettings(loadJson(SETTINGS_KEY, DEFAULT_SETTINGS)));
       setStorageReady(true);
     });
     return () => {
@@ -746,13 +578,10 @@ export default function Home() {
     };
   }, [tasks]);
 
-  const syncEnabled = canSyncToSheet(settings);
   const pendingTaskIdSet = useMemo(() => new Set(pendingTaskIds), [pendingTaskIds]);
   const hasPendingWrites = pendingTaskIds.length > 0;
-  const currentLocalSyncMessage = useMemo(() => localSyncMessage(settings), [settings]);
-  const currentBlockedWriteMessage = useMemo(() => sheetWriteBlockedMessage(settings), [settings]);
-  const visibleSyncState = syncEnabled ? syncState : syncState === "error" ? "error" : "local";
-  const visibleSyncMessage = syncEnabled ? syncMessage : syncState === "error" ? syncMessage : currentLocalSyncMessage;
+  const visibleSyncState = syncState;
+  const visibleSyncMessage = syncMessage;
 
   const markTaskPending = useCallback((taskId: string, pending: boolean) => {
     setPendingTaskIds((current) => {
@@ -761,38 +590,39 @@ export default function Home() {
     });
   }, []);
 
-  const loadFromSheet = useCallback(
+  const loadFromDatabase = useCallback(
     async (options: { silent?: boolean } = {}) => {
-      if (!syncEnabled) {
-        setSyncState("local");
-        setSyncMessage(currentLocalSyncMessage);
-        return;
-      }
       if (!options.silent) {
         setSyncState("syncing");
-        setSyncMessage("Syncing from Sheet");
+        setSyncMessage("Loading from Supabase");
       }
       try {
-        const data = await sheetRequest<{ tasks?: Task[]; activity?: Activity[] }>(settings, "list");
+        const data = await dataRequest<{ tasks?: Task[]; activity?: Activity[] }>("list");
         setTasks((data.tasks || []).map(normalizeTask));
         setActivity(data.activity || []);
         setSyncState("synced");
-        setSyncMessage(`${options.silent ? "Auto-synced" : "Synced"} ${TIME_FORMATTER.format(new Date())}`);
+        setSyncMessage(`${options.silent ? "Auto-synced" : "Synced"} with Supabase ${TIME_FORMATTER.format(new Date())}`);
       } catch (error) {
         setSyncState("error");
         setSyncMessage(error instanceof Error ? error.message : "Sync failed");
       }
     },
-    [currentLocalSyncMessage, settings, syncEnabled],
+    [],
   );
 
   useEffect(() => {
-    if (!storageReady || !syncEnabled || hasPendingWrites) return;
+    if (!storageReady || hasPendingWrites) return;
+    const timeoutId = window.setTimeout(() => void loadFromDatabase(), 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [hasPendingWrites, loadFromDatabase, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || hasPendingWrites) return;
     const intervalId = window.setInterval(() => {
-      if (document.visibilityState === "visible") void loadFromSheet({ silent: true });
+      if (document.visibilityState === "visible") void loadFromDatabase({ silent: true });
     }, 30000);
     return () => window.clearInterval(intervalId);
-  }, [hasPendingWrites, loadFromSheet, storageReady, syncEnabled]);
+  }, [hasPendingWrites, loadFromDatabase, storageReady]);
 
   function chooseQuickFilter(filter: QuickFilter) {
     setQuickFilter((current) => (current === filter ? "all" : filter));
@@ -809,16 +639,15 @@ export default function Home() {
     setQuery("");
   }
 
-  function requireSheetSyncForWrites() {
-    if (syncEnabled) return true;
+  function requireDatabaseForWrites() {
+    if (syncState !== "error") return true;
     setSyncState("error");
-    setSyncMessage(currentBlockedWriteMessage);
-    setShowSettings(true);
+    setSyncMessage("Fix the Supabase connection before changing tasks.");
     return false;
   }
 
   async function persistTask(task: Task, action: "create" | "update" = "update") {
-    if (!requireSheetSyncForWrites()) return false;
+    if (!requireDatabaseForWrites()) return false;
 
     const previousTask = tasks.find((item) => item.id === task.id);
     const savedTask = stampTaskWorkflow(task, action === "create" ? undefined : previousTask);
@@ -828,13 +657,13 @@ export default function Home() {
 
     markTaskPending(savedTask.id, true);
     setSyncState("syncing");
-    setSyncMessage("Saving to Sheet");
+    setSyncMessage("Saving to Supabase");
     try {
-      const data = await sheetRequest<{ task?: Task }>(settings, "saveTask", { task: savedTask, activities: entries });
+      const data = await dataRequest<{ task?: Task }>("saveTask", { task: savedTask, activities: entries });
       const confirmedTask = normalizeTask(data.task || savedTask);
       setTasks((current) => upsertTask(current, confirmedTask));
       setSyncState("synced");
-      setSyncMessage(`Saved to Sheet ${TIME_FORMATTER.format(new Date())}`);
+      setSyncMessage(`Saved to Supabase ${TIME_FORMATTER.format(new Date())}`);
       return true;
     } catch (error) {
       setTasks((current) => {
@@ -857,7 +686,7 @@ export default function Home() {
   }
 
   async function deleteTask(task: Task) {
-    if (!requireSheetSyncForWrites()) return;
+    if (!requireDatabaseForWrites()) return;
 
     setTasks((current) => current.filter((item) => item.id !== task.id));
     const entry: Activity = {
@@ -874,11 +703,11 @@ export default function Home() {
 
     markTaskPending(task.id, true);
     setSyncState("syncing");
-    setSyncMessage("Deleting from Sheet");
+    setSyncMessage("Deleting from Supabase");
     try {
-      await sheetRequest(settings, "deleteTask", { id: task.id, activities: [entry] });
+      await dataRequest("deleteTask", { id: task.id, activities: [entry] });
       setSyncState("synced");
-      setSyncMessage(`Deleted from Sheet ${TIME_FORMATTER.format(new Date())}`);
+      setSyncMessage(`Deleted from Supabase ${TIME_FORMATTER.format(new Date())}`);
     } catch (error) {
       setTasks((current) => (current.some((item) => item.id === task.id) ? current : [task, ...current]));
       setActivity((current) => removeActivityEntries(current, [entry]));
@@ -890,7 +719,7 @@ export default function Home() {
   }
 
   function newTask() {
-    if (!requireSheetSyncForWrites()) return;
+    if (!requireDatabaseForWrites()) return;
 
     setEditingTask({
       ...emptyTask(),
@@ -899,13 +728,6 @@ export default function Home() {
       createdAt: "",
       updatedAt: "",
     });
-  }
-
-  function generateToken() {
-    setSettings((current) => ({
-      ...current,
-      token: crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, ""),
-    }));
   }
 
   return (
@@ -921,13 +743,12 @@ export default function Home() {
           </div>
         </div>
         <div className="topbar-actions">
-          <a className="sheet-link" href={settings.sheetUrl || SHEET_URL} target="_blank" rel="noreferrer">
-            <FileSpreadsheet size={17} />
-            Sheet
-            <ExternalLink size={14} />
-          </a>
-          <SyncPill state={visibleSyncState} message={visibleSyncMessage} local={!syncEnabled} />
-          <button className="icon-button" type="button" aria-label="Refresh from Sheet" title="Refresh from Sheet" onClick={() => void loadFromSheet()}>
+          <span className="sheet-link" title="Supabase database">
+            <Database size={17} />
+            Supabase
+          </span>
+          <SyncPill state={visibleSyncState} message={visibleSyncMessage} local={false} />
+          <button className="icon-button" type="button" aria-label="Refresh from Supabase" title="Refresh from Supabase" onClick={() => void loadFromDatabase()}>
             {visibleSyncState === "syncing" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
           </button>
           <button className="icon-button" type="button" aria-label="Settings" title="Settings" onClick={() => setShowSettings(true)}>
@@ -940,15 +761,15 @@ export default function Home() {
         </div>
       </header>
 
-      {!syncEnabled && (
-        <section className="sync-warning" role="status" aria-label="Google Sheet sync required">
+      {syncState === "error" && (
+        <section className="sync-warning" role="status" aria-label="Supabase connection issue">
           <CloudOff size={18} />
           <div>
-            <strong>Google Sheet is not connected</strong>
-            <span>The visible board is browser cache. Connect Settings and Load Sheet before create, edit, move, or delete.</span>
+            <strong>Supabase is not connected</strong>
+            <span>The visible board is browser cache. Fix the Supabase setup, then refresh before changing tasks.</span>
           </div>
-          <button className="ghost-button" type="button" onClick={() => setShowSettings(true)}>
-            Connect
+          <button className="ghost-button" type="button" onClick={() => void loadFromDatabase()}>
+            Retry
           </button>
         </section>
       )}
@@ -1106,8 +927,7 @@ export default function Home() {
           settings={settings}
           onChange={setSettings}
           onClose={() => setShowSettings(false)}
-          onLoad={() => void loadFromSheet()}
-          onGenerateToken={generateToken}
+          onLoad={() => void loadFromDatabase()}
           syncState={visibleSyncState}
           syncMessage={visibleSyncMessage}
         />
@@ -1500,7 +1320,6 @@ function SettingsDialog({
   onChange,
   onClose,
   onLoad,
-  onGenerateToken,
   syncState,
   syncMessage,
 }: {
@@ -1508,7 +1327,6 @@ function SettingsDialog({
   onChange: (settings: Settings) => void;
   onClose: () => void;
   onLoad: () => void;
-  onGenerateToken: () => void;
   syncState: string;
   syncMessage: string;
 }) {
@@ -1518,45 +1336,22 @@ function SettingsDialog({
         <div className="dialog-header">
           <div>
             <p className="eyebrow">Connection</p>
-            <h2>Google Sheet Sync</h2>
+            <h2>Supabase Sync</h2>
           </div>
           <button className="icon-button" type="button" aria-label="Close" onClick={onClose}>
             <X size={18} />
           </button>
         </div>
         <label className="field wide">
-          Apps Script Web App URL
-          <input
-            value={settings.scriptUrl}
-            placeholder="https://script.google.com/macros/s/.../exec"
-            onChange={(event) => onChange({ ...settings, scriptUrl: event.target.value })}
-          />
-          <span className="field-help">Required for Sheet sync. Paste the deployed Apps Script Web App URL ending in /exec.</span>
-        </label>
-        <label className="field wide">
-          App token
-          <div className="inline-field">
-            <input value={settings.token} onChange={(event) => onChange({ ...settings, token: event.target.value })} />
-            <button className="ghost-button" type="button" onClick={onGenerateToken}>
-              Generate
-            </button>
-          </div>
-          <span className="field-help">This must match the APP_TOKEN saved in Apps Script project settings.</span>
-        </label>
-        <label className="field wide">
           Actor
-          <input value={settings.actor} onChange={(event) => onChange({ ...settings, actor: event.target.value })} />
-        </label>
-        <label className="field wide">
-          Sheet URL
-          <input value={settings.sheetUrl} onChange={(event) => onChange({ ...settings, sheetUrl: event.target.value })} />
-          <span className="field-help">This is only the storage Sheet link shown in the header. It is not the sync API URL.</span>
+          <input value={settings.actor} onChange={(event) => onChange({ actor: event.target.value })} />
+          <span className="field-help">This name is used in Recent Activity when tasks are created, moved, edited, or deleted.</span>
         </label>
         <div className="settings-status">
-          <SyncPill state={syncState} message={syncMessage} local={!canSyncToSheet(settings)} />
+          <SyncPill state={syncState} message={syncMessage} local={false} />
           <button className="primary-button" type="button" onClick={onLoad}>
             <RefreshCw size={18} />
-            Load Sheet
+            Refresh
           </button>
         </div>
       </section>

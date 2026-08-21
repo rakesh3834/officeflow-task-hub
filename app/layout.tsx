@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "OfficeFlow Task Hub",
-  description: "A Google Sheets-backed daily office task tracker.",
+  description: "A Supabase-backed daily office task tracker.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
